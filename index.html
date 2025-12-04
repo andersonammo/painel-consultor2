@@ -1,0 +1,784 @@
+<!-- Chosen Palette: Warm Neutrals & Professional Teal - Background: #fdfbf7 (Cream), Primary: #2d3748 (Dark Slate), Accent: #38b2ac (Teal), Secondary: #ed8936 (Muted Orange) -->
+
+<!-- Application Structure Plan: 
+    1. **Login/Register View:** Handles user authentication (Login and Registration modes).
+    2. **User Directory (Firestore):**
+        - Collection: `artifacts/{appId}/public/data/users/{sanitizedName}`.
+        - Stores: `{ passwordHash: "...", createdAt: "..." }`.
+    3. **Dashboard:** Interactive timeline, mission card, and performance tracking charts synchronized with Firestore.
+-->
+
+<!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Painel de Alta Performance: Consultor de Ótica</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+        // Firebase Configuration
+        {
+  apiKey: "AIzaSyA2w-s3ZGRlUW3KJ12Qy6fqdUJYL7TpwcE",
+  authDomain: "proximo-nivel-7bc9d.firebaseapp.com",
+  projectId: "proximo-nivel-7bc9d",
+  storageBucket: "proximo-nivel-7bc9d.firebasestorage.app",
+  messagingSenderId: "108222503240",
+  appId: "1:108222503240:web:31e62f4fafd58f8e7abb7d",
+  measurementId: "G-KSQEND9KWH"
+};
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // State
+        let currentUser = null;
+        let consultantName = localStorage.getItem('optical_consultant_name') || '';
+
+        // Helper: Hash Password (SHA-256)
+        async function hashPassword(message) {
+            const msgBuffer = new TextEncoder().encode(message);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Auth Logic
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                currentUser = auth.currentUser;
+                console.log("Conectado. UID:", currentUser ? currentUser.uid : 'null');
+                
+                // Auto-fill login if saved
+                if (consultantName) {
+                    const loginNameField = document.getElementById('login-name');
+                    if(loginNameField) loginNameField.value = consultantName;
+                }
+            } catch (error) {
+                console.error("Erro na autenticação:", error);
+                alert("Erro ao conectar com o servidor.");
+            }
+        }
+
+        initAuth();
+
+        // Expose DB functions
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.getDoc = getDoc;
+        window.hashPassword = hashPassword;
+        
+        // --- LOGIN / REGISTER LOGIC ---
+        let isRegisterMode = false;
+
+        window.toggleAuthMode = function() {
+            isRegisterMode = !isRegisterMode;
+            const title = document.getElementById('auth-title');
+            const btn = document.getElementById('auth-submit-btn');
+            const toggleText = document.getElementById('auth-toggle-text');
+            const subtitle = document.getElementById('auth-subtitle');
+
+            if (isRegisterMode) {
+                title.innerText = "Novo Cadastro";
+                subtitle.innerText = "Crie sua conta de consultor";
+                btn.innerText = "Criar Conta";
+                toggleText.innerHTML = 'Já tem conta? <button type="button" onclick="toggleAuthMode()" class="text-teal-600 font-bold hover:underline">Entrar</button>';
+            } else {
+                title.innerText = "Consultor Pro";
+                subtitle.innerText = "Acesse seu painel de performance";
+                btn.innerText = "Entrar no Sistema";
+                toggleText.innerHTML = 'Não tem cadastro? <button type="button" onclick="toggleAuthMode()" class="text-teal-600 font-bold hover:underline">Criar conta</button>';
+            }
+        }
+
+        window.handleAuthSubmit = async function(e) {
+            e.preventDefault();
+            const nameInput = document.getElementById('login-name').value.trim();
+            const passInput = document.getElementById('login-pass').value.trim();
+
+            if (!nameInput || !passInput) {
+                alert("Preencha todos os campos.");
+                return;
+            }
+            if (passInput.length < 4) {
+                alert("A senha deve ter pelo menos 4 caracteres.");
+                return;
+            }
+
+            const btn = document.getElementById('auth-submit-btn');
+            const originalText = btn.innerText;
+            btn.innerText = "Processando...";
+            btn.disabled = true;
+
+            try {
+                // Sanitize ID
+                const safeName = nameInput.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+                // Using public collection for shared access in this environment
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', safeName);
+                const passwordHash = await window.hashPassword(passInput);
+
+                if (isRegisterMode) {
+                    // REGISTER FLOW
+                    const docSnap = await getDoc(userDocRef);
+                    if (docSnap.exists()) {
+                        alert("Este nome de usuário já existe. Tente outro.");
+                        btn.innerText = originalText;
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    await setDoc(userDocRef, {
+                        name: nameInput,
+                        passwordHash: passwordHash,
+                        createdAt: new Date().toISOString()
+                    });
+
+                    alert("Cadastro realizado com sucesso! Entrando...");
+                    consultantName = nameInput;
+                    
+                } else {
+                    // LOGIN FLOW
+                    const docSnap = await getDoc(userDocRef);
+                    
+                    if (!docSnap.exists()) {
+                        alert("Usuário não encontrado. Verifique o nome ou cadastre-se.");
+                        btn.innerText = originalText;
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    const userData = docSnap.data();
+                    if (userData.passwordHash !== passwordHash) {
+                        alert("Senha incorreta.");
+                        btn.innerText = originalText;
+                        btn.disabled = false;
+                        return;
+                    }
+                    
+                    consultantName = userData.name; // Use stored name case
+                }
+
+                // Success for both flows
+                localStorage.setItem('optical_consultant_name', consultantName);
+                document.getElementById('login-view').classList.add('hidden');
+                document.getElementById('dashboard-view').classList.remove('hidden');
+                document.getElementById('header-consultant-name').innerText = consultantName;
+                window.loadDayData(window.currentDayIndex);
+
+            } catch (err) {
+                console.error(err);
+                alert("Erro ao processar: " + err.message);
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        };
+
+        // Save Data Function (Existing)
+        window.saveToDb = async function(dataObj) {
+            if (!currentUser || !consultantName) return;
+
+            const dateKey = window.getDateKey(window.currentDayIndex);
+            const safeName = consultantName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            const docId = `${safeName}_${dateKey}`;
+            
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'daily_reports', docId);
+
+            try {
+                const statusEl = document.getElementById('save-status');
+                if(statusEl) statusEl.innerText = "Salvando...";
+                
+                await setDoc(docRef, dataObj, { merge: true });
+                
+                if(statusEl) {
+                    statusEl.innerText = "Salvo ✓";
+                    setTimeout(() => { statusEl.innerText = ""; }, 2000);
+                }
+            } catch (e) {
+                console.error("Erro ao salvar:", e);
+                const statusEl = document.getElementById('save-status');
+                if(statusEl) statusEl.innerText = "Erro ao salvar";
+            }
+        };
+
+        // Load Data Function (Existing)
+        window.fetchFromDb = async function(dayIndex) {
+            if (!currentUser || !consultantName) return null;
+
+            const dateKey = window.getDateKey(dayIndex);
+            const safeName = consultantName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            const docId = `${safeName}_${dateKey}`;
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'daily_reports', docId);
+
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    return docSnap.data();
+                }
+            } catch (e) {
+                console.error("Erro ao carregar:", e);
+            }
+            return null;
+        };
+
+    </script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #fdfbf7; color: #2d3748; }
+        .timeline-line { position: absolute; left: 1.25rem; top: 0; bottom: 0; width: 2px; background-color: #e2e8f0; z-index: 0; }
+        .active-block { border-left: 4px solid #38b2ac; background-color: white; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .inactive-block { border-left: 4px solid #cbd5e0; background-color: #f7fafc; opacity: 0.8; }
+        .checkbox-custom { appearance: none; width: 1.2em; height: 1.2em; border: 2px solid #38b2ac; border-radius: 4px; display: inline-grid; place-content: center; cursor: pointer; }
+        .checkbox-custom::before { content: ""; width: 0.65em; height: 0.65em; transform: scale(0); transition: 120ms transform ease-in-out; box-shadow: inset 1em 1em #38b2ac; transform-origin: center; clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%); }
+        .checkbox-custom:checked::before { transform: scale(1); }
+        .chart-container { position: relative; width: 100%; max-width: 100%; height: 250px; }
+        
+        /* Custom Scrollbar */
+        .task-scroll::-webkit-scrollbar { width: 6px; }
+        .task-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
+        .task-scroll::-webkit-scrollbar-thumb { background: #cbd5e0; border-radius: 3px; }
+        .task-scroll::-webkit-scrollbar-thumb:hover { background: #a0aec0; }
+
+        /* Login Background */
+        .login-bg {
+            background-image: radial-gradient(#38b2ac 0.5px, #fdfbf7 0.5px);
+            background-size: 10px 10px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- LOGIN / REGISTER VIEW -->
+    <div id="login-view" class="fixed inset-0 z-50 flex items-center justify-center login-bg px-4">
+        <div class="bg-white p-8 rounded-xl shadow-xl max-w-md w-full border border-gray-100 transition-all duration-300">
+            <div class="text-center mb-8">
+                <span class="text-4xl mb-2 block">👓</span>
+                <h1 id="auth-title" class="text-2xl font-bold text-gray-800">Consultor Pro</h1>
+                <p id="auth-subtitle" class="text-sm text-gray-500">Acesse seu painel de performance diária</p>
+            </div>
+            
+            <form onsubmit="handleAuthSubmit(event)" class="space-y-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Nome de Usuário</label>
+                    <input type="text" id="login-name" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="Seu nome" required>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Senha</label>
+                    <input type="password" id="login-pass" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="••••••••" required>
+                </div>
+
+                <button type="submit" id="auth-submit-btn" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 px-4 rounded-lg shadow-md transition-colors duration-200">
+                    Entrar no Sistema
+                </button>
+            </form>
+            
+            <div class="mt-6 text-center text-sm text-gray-600">
+                <p id="auth-toggle-text">
+                    Não tem cadastro? 
+                    <button type="button" onclick="toggleAuthMode()" class="text-teal-600 font-bold hover:underline">Criar conta</button>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- DASHBOARD VIEW (Hidden initially) -->
+    <div id="dashboard-view" class="hidden flex flex-col min-h-screen w-full">
+        
+        <!-- Header Section -->
+        <header class="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+                <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div class="flex items-center gap-3">
+                        <div class="h-10 w-10 bg-teal-100 rounded-full flex items-center justify-center text-teal-700 font-bold">
+                            <span id="user-initials">CP</span>
+                        </div>
+                        <div>
+                            <h1 class="text-lg font-bold text-gray-800 tracking-tight leading-tight">Olá, <span id="header-consultant-name">Consultor</span></h1>
+                            <div class="flex items-center gap-2">
+                                <p class="text-xs text-gray-500">Painel Diário</p>
+                                <span id="save-status" class="text-xs font-bold text-green-600 animate-pulse"></span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Day Selector -->
+                    <div class="flex bg-gray-100 p-1 rounded-lg overflow-x-auto w-full md:w-auto">
+                        <button onclick="setDay(0)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="0">Seg</button>
+                        <button onclick="setDay(1)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="1">Ter</button>
+                        <button onclick="setDay(2)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="2">Qua</button>
+                        <button onclick="setDay(3)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="3">Qui</button>
+                        <button onclick="setDay(4)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="4">Sex</button>
+                        <button onclick="setDay(5)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="5">Sáb</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            <!-- INTRO & CONTEXT (Full Width) -->
+            <div class="lg:col-span-12 mb-4">
+                <div class="bg-teal-50 border-l-4 border-teal-500 p-4 rounded-r-md shadow-sm flex justify-between items-center">
+                    <div>
+                        <h2 class="text-lg font-semibold text-teal-800 mb-1">Painel de Controle</h2>
+                        <p class="text-teal-700 text-sm leading-relaxed">
+                           Seus dados são salvos automaticamente. Utilize este painel para guiar suas ações e registrar sua performance.
+                        </p>
+                    </div>
+                    <button onclick="logout()" class="text-xs text-teal-600 hover:text-teal-800 font-semibold underline">Sair</button>
+                </div>
+            </div>
+
+            <!-- LEFT COLUMN: Interactive Timeline -->
+            <div class="lg:col-span-7 flex flex-col gap-6">
+                <div class="flex justify-between items-end border-b pb-2 mb-2">
+                    <h3 class="text-xl font-bold text-gray-800">Rotina Diária</h3>
+                    <span class="text-xs font-semibold text-orange-600 bg-orange-100 px-2 py-1 rounded">Regra de Ouro: Cliente na loja = Prioridade!</span>
+                </div>
+
+                <div class="relative pl-4" id="timeline-container">
+                    <!-- Timeline Line -->
+                    <div class="timeline-line"></div>
+                    
+                    <!-- Generated by JS: Time Blocks -->
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN: Tools & Insights -->
+            <div class="lg:col-span-5 flex flex-col gap-6">
+                
+                <!-- Dynamic Daily Mission -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 transition-all duration-300 hover:shadow-md">
+                    <div class="flex items-center gap-3 mb-4">
+                        <span class="text-2xl">🎯</span>
+                        <div>
+                            <h3 class="text-lg font-bold text-gray-800">Missão do Dia</h3>
+                            <p id="mission-day-label" class="text-xs text-gray-500 uppercase tracking-wide font-bold">Segunda-feira</p>
+                        </div>
+                    </div>
+                    <div class="space-y-3">
+                        <div class="p-3 bg-blue-50 rounded-lg border border-blue-100">
+                            <span class="text-xs font-bold text-blue-600 uppercase">Foco Principal</span>
+                            <p id="mission-focus" class="text-gray-800 font-medium mt-1">CRM Intenso</p>
+                        </div>
+                        <div class="p-3 bg-purple-50 rounded-lg border border-purple-100">
+                            <span class="text-xs font-bold text-purple-600 uppercase">Ação Extra</span>
+                            <p id="mission-action" class="text-gray-700 text-sm mt-1">Ligar para clientes que ficaram de "pensar"</p>
+                        </div>
+                        <div class="p-3 bg-pink-50 rounded-lg border border-pink-100">
+                            <span class="text-xs font-bold text-pink-600 uppercase">Presença Digital</span>
+                            <p id="mission-digital" class="text-gray-700 text-sm mt-1">Postar motivacional + Óculos Blue Light</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Scripts Toolkit -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 class="text-lg font-bold text-gray-800 mb-4 border-b pb-2">🗣️ Scripts Rápidos</h3>
+                    <p class="text-sm text-gray-500 mb-4">Use estes roteiros durante o bloco de CRM ou Pós-Venda.</p>
+                    
+                    <div class="space-y-2">
+                        <!-- Script 1 -->
+                        <div class="border rounded-lg overflow-hidden">
+                            <button class="w-full px-4 py-3 text-left bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-medium text-gray-700" onclick="toggleScript('script-1')">
+                                📞 Resgate (1 ano+)
+                                <span class="text-gray-400 text-xs">▼</span>
+                            </button>
+                            <div id="script-1" class="hidden px-4 py-3 bg-white text-sm text-gray-600 border-t border-gray-100 italic">
+                                "Olá [Nome], vi que faz um ano dos seus óculos. Como está a adaptação? Estamos com a agenda aberta para uma revisão gratuita..."
+                            </div>
+                        </div>
+                        <!-- Script 2 -->
+                         <div class="border rounded-lg overflow-hidden">
+                            <button class="w-full px-4 py-3 text-left bg-gray-50 hover:bg-gray-100 flex justify-between items-center text-sm font-medium text-gray-700" onclick="toggleScript('script-2')">
+                                ✅ Pós-Venda (7/15 dias)
+                                <span class="text-gray-400 text-xs">▼</span>
+                            </button>
+                            <div id="script-2" class="hidden px-4 py-3 bg-white text-sm text-gray-600 border-t border-gray-100 italic">
+                                "Os óculos estão confortáveis? A visão está nítida? Precisa de algum ajuste?"
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Performance Chart & Input -->
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-lg font-bold text-gray-800">📊 Relatório do Dia</h3>
+                    </div>
+                    <p class="text-xs text-gray-500 mb-4">Os dados são salvos automaticamente no banco de dados.</p>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-600 mb-1">Vendas (R$)</label>
+                            <input type="number" id="input-sales" class="w-full p-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none" placeholder="0" oninput="handleMetricChange()">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-600 mb-1">Meta Diária (R$)</label>
+                            <input type="number" id="input-goal" class="w-full p-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none" value="2000" oninput="handleMetricChange()">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-600 mb-1">Leads Novos</label>
+                            <input type="number" id="input-leads" class="w-full p-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none" placeholder="0" oninput="handleMetricChange()">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-600 mb-1">Agendamentos</label>
+                            <input type="number" id="input-appointments" class="w-full p-2 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none" placeholder="0" oninput="handleMetricChange()">
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <canvas id="performanceChart"></canvas>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+        
+        <!-- Footer -->
+        <footer class="bg-white border-t border-gray-200 mt-auto">
+            <div class="max-w-7xl mx-auto px-4 py-6 text-center text-sm text-gray-500">
+                <p>&copy; 2023 Cronograma de Alta Performance. Dados salvos em nuvem.</p>
+            </div>
+        </footer>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        // --- DATA SOURCE (Static content) ---
+        const scheduleData = [
+            {
+                time: "08:00 - 09:00",
+                title: "Preparação e Organização",
+                icon: "🧹",
+                desc: "O início do dia define o ritmo.",
+                tasks: [
+                    "Checklist de Loja: Limpeza das vitrines e alinhamento",
+                    "Conferência de OS: Checar laboratório e entregas",
+                    "Definir Valor Numérico da Meta do Dia",
+                    "Status WhatsApp: 'Bom dia' + Foto Produto"
+                ]
+            },
+            {
+                time: "09:00 - 10:00",
+                title: "Tráfego Orgânico & Digital",
+                icon: "📱",
+                desc: "Captar leads e gerar desejo.",
+                tasks: [
+                    "Stories: 1 vídeo curto (15s) de armação",
+                    "Stories: 1 enquete interativa",
+                    "Stories: Repostar depoimento/prova social",
+                    "Responder Directs pendentes com perguntas"
+                ]
+            },
+            {
+                time: "10:00 - 11:30",
+                title: "CRM e Agendamento",
+                icon: "📞",
+                desc: "Foco na base. O dinheiro está no retorno.",
+                tasks: [
+                    "Resgate (1 ano+): Ligar para clientes de 12-18 meses",
+                    "Aniversariantes: Enviar parabéns + oferta",
+                    "Orçamentos: Contatar pendentes de 7 dias"
+                ]
+            },
+            {
+                time: "11:30 - 13:30",
+                title: "Intervalo de Almoço",
+                icon: "🍽️",
+                desc: "Recarregue as energias.",
+                tasks: [],
+                isBreak: true
+            },
+            {
+                time: "13:30 - 15:00",
+                title: "Ações Externas & Parcerias",
+                icon: "🤝",
+                desc: "Caça de Leads. Movimento gera movimento.",
+                tasks: [
+                    "Visitar 2 comércios vizinhos",
+                    "Entregar cartão focado em Limpeza Gratuita",
+                    "Coletar 5 contatos de WhatsApp (Meta)"
+                ]
+            },
+            {
+                time: "15:00 - 17:00",
+                title: "Vendas e Pós-Venda",
+                icon: "🛍️",
+                desc: "Horário de fluxo. Foco no salão.",
+                tasks: [
+                    "Atendimento de Salão (Prioridade Total)",
+                    "Pós-Venda: Mensagem para retirada há 7/15 dias",
+                    "Repor peças vendidas na vitrine"
+                ]
+            },
+            {
+                time: "17:00 - 18:00",
+                title: "Fechamento e Planejamento",
+                icon: "📝",
+                desc: "Preparar o terreno para amanhã.",
+                tasks: [
+                    "Responder leads das redes sociais da tarde",
+                    "Preencher Relatório Diário",
+                    "Organização final (Vitrines, Balcão)"
+                ]
+            }
+        ];
+
+        const weeklyMissions = [
+            { day: "Segunda-feira", focus: "CRM Intenso", action: "Ligar para clientes que ficaram de 'pensar' no sábado.", digital: "Motivacional + Óculos Trabalho" },
+            { day: "Terça-feira", focus: "Prospecção Externa", action: "Visitar 1 empresa p/ oferecer convênio.", digital: "Vídeo técnico (Lente simples vs Multifocal)" },
+            { day: "Quarta-feira", focus: "Visual Merchandising", action: "Trocar destaque da vitrine. Organizar Lentes.", digital: "Foco em Lentes de Contato" },
+            { day: "Quinta-feira", focus: "Ofertas da Semana", action: "Resgatar orçamentos antigos com condição especial.", digital: "#TBT cliente satisfeito" },
+            { day: "Sexta-feira", focus: "Urgência (Fechamento)", action: "Confirmar entregas/agenda de sábado.", digital: "'Prepare-se para o Fim de Semana'" },
+            { day: "Sábado", focus: "Vendas de Salão", action: "Oferecer café na porta. Criar movimento.", digital: "Bastidores da loja cheia" },
+        ];
+
+        // --- GLOBAL STATE ---
+        window.currentDayIndex = 0; // 0 = Mon, 5 = Sat
+
+        // --- INIT ---
+        document.addEventListener('DOMContentLoaded', () => {
+            renderTimeline();
+            initChart();
+            // We do NOT call setDay here immediately because we wait for Login
+            // But we can render the default UI structure behind the scenes
+        });
+
+        // --- HELPERS ---
+        window.getDateKey = function(dayIndex) {
+            // Helper to generate a date string for "This week's Monday + dayIndex"
+            // For this demo, we will just use the Day Name to simulate cyclic data or a simplified date
+            // In a real app, this would be new Date().toISOString().split('T')[0];
+            const today = new Date();
+            const dayDiff = dayIndex - (today.getDay() === 0 ? 6 : today.getDay() - 1); // Adjust to make Monday index 0
+            const targetDate = new Date(today);
+            targetDate.setDate(today.getDate() + dayDiff);
+            return targetDate.toISOString().split('T')[0]; // Format YYYY-MM-DD
+        }
+
+        // --- RENDER TIMELINE ---
+        function renderTimeline() {
+            const container = document.getElementById('timeline-container');
+            container.innerHTML = '<div class="timeline-line"></div>'; // Reset line
+
+            scheduleData.forEach((block, index) => {
+                const isBreak = block.isBreak ? 'opacity-75 bg-gray-100' : 'bg-white';
+                const html = `
+                    <div class="relative z-10 mb-6 pl-8">
+                        <div class="absolute left-0 -translate-x-1/2 w-10 h-10 bg-white border-4 border-gray-200 rounded-full flex items-center justify-center text-lg shadow-sm" style="margin-left: 2px;">
+                            ${block.icon}
+                        </div>
+                        
+                        <div class="${isBreak} rounded-lg shadow-sm border border-gray-200 transition-all duration-200 hover:shadow-md cursor-pointer group" onclick="toggleBlock(${index})">
+                            <div class="p-4 flex justify-between items-center">
+                                <div>
+                                    <span class="text-xs font-bold text-teal-600 uppercase tracking-wide">${block.time}</span>
+                                    <h4 class="text-md font-bold text-gray-800">${block.title}</h4>
+                                </div>
+                                <span class="text-gray-400 group-hover:text-teal-600 transition-colors">${block.tasks.length > 0 ? '▼' : ''}</span>
+                            </div>
+                            
+                            ${block.tasks.length > 0 ? `
+                            <div id="block-content-${index}" class="hidden px-4 pb-4 pt-0 border-t border-gray-100 mt-2">
+                                <p class="text-xs text-gray-500 italic my-2">${block.desc}</p>
+                                <ul class="space-y-2">
+                                    ${block.tasks.map((task, taskIdx) => `
+                                        <li class="flex items-start gap-3">
+                                            <input type="checkbox" id="task-${index}-${taskIdx}" class="checkbox-custom mt-1 flex-shrink-0" onclick="handleTaskClick(event, ${index}, ${taskIdx})">
+                                            <span class="text-sm text-gray-700 leading-snug">${task}</span>
+                                        </li>
+                                    `).join('')}
+                                </ul>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+                container.insertAdjacentHTML('beforeend', html);
+            });
+        }
+
+        // --- INTERACTION FUNCTIONS ---
+        window.toggleBlock = function(index) {
+            const content = document.getElementById(`block-content-${index}`);
+            if (content) {
+                content.classList.toggle('hidden');
+            }
+        }
+
+        window.setDay = async function(dayIndex) {
+            window.currentDayIndex = dayIndex;
+            
+            // UI Buttons Update
+            document.querySelectorAll('.day-btn').forEach(btn => {
+                if (parseInt(btn.dataset.day) === dayIndex) {
+                    btn.classList.add('bg-teal-600', 'text-white', 'shadow-md');
+                    btn.classList.remove('text-gray-600', 'hover:bg-white');
+                } else {
+                    btn.classList.remove('bg-teal-600', 'text-white', 'shadow-md');
+                    btn.classList.add('text-gray-600');
+                }
+            });
+
+            // Mission Card Update
+            const mission = weeklyMissions[dayIndex];
+            document.getElementById('mission-day-label').innerText = mission.day;
+            document.getElementById('mission-focus').innerText = mission.focus;
+            document.getElementById('mission-action').innerText = mission.action;
+            document.getElementById('mission-digital').innerText = mission.digital;
+
+            // Load Data for this specific day
+            await window.loadDayData(dayIndex);
+        }
+
+        window.toggleScript = function(id) {
+            const el = document.getElementById(id);
+            if (el.classList.contains('hidden')) el.classList.remove('hidden');
+            else el.classList.add('hidden');
+        }
+
+        window.logout = function() {
+            localStorage.removeItem('optical_consultant_name');
+            location.reload();
+        }
+
+        // --- DATABASE SYNC LOGIC ---
+
+        window.loadDayData = async function(dayIndex) {
+            // Reset UI first
+            document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+            document.getElementById('input-sales').value = '';
+            document.getElementById('input-leads').value = '';
+            document.getElementById('input-appointments').value = '';
+            document.getElementById('input-goal').value = 2000;
+            updateChart(); // Reset chart
+
+            const data = await window.fetchFromDb(dayIndex);
+            
+            if (data) {
+                // Restore Inputs
+                if (data.sales) document.getElementById('input-sales').value = data.sales;
+                if (data.goal) document.getElementById('input-goal').value = data.goal;
+                if (data.leads) document.getElementById('input-leads').value = data.leads;
+                if (data.appointments) document.getElementById('input-appointments').value = data.appointments;
+                
+                // Restore Checkboxes
+                if (data.tasks) {
+                    Object.keys(data.tasks).forEach(key => {
+                        const cb = document.getElementById(`task-${key}`);
+                        if (cb) cb.checked = data.tasks[key];
+                    });
+                }
+                
+                updateChart();
+            }
+        }
+
+        window.handleTaskClick = function(event, blockIndex, taskIndex) {
+            event.stopPropagation();
+            // Build task state object
+            const taskKey = `${blockIndex}-${taskIndex}`;
+            const isChecked = event.target.checked;
+            
+            // We need to fetch current state or merge. 
+            // Firestore merge handles this, but we need nested object syntax or just a map.
+            // Simplified: We'll read the DOM for all checked boxes and save the whole map.
+            const allTasks = {};
+            document.querySelectorAll('.checkbox-custom').forEach(cb => {
+                const idParts = cb.id.replace('task-', '');
+                allTasks[idParts] = cb.checked;
+            });
+
+            window.saveToDb({ tasks: allTasks });
+        }
+
+        window.handleMetricChange = function() {
+            const sales = document.getElementById('input-sales').value;
+            const goal = document.getElementById('input-goal').value;
+            const leads = document.getElementById('input-leads').value;
+            const appointments = document.getElementById('input-appointments').value;
+
+            updateChart();
+
+            // Debounce save slightly
+            if (window.saveTimeout) clearTimeout(window.saveTimeout);
+            window.saveTimeout = setTimeout(() => {
+                window.saveToDb({
+                    sales: sales,
+                    goal: goal,
+                    leads: leads,
+                    appointments: appointments
+                });
+            }, 1000);
+        }
+
+        // --- CHART LOGIC ---
+        let performanceChart;
+
+        function initChart() {
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            
+            performanceChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Realizado', 'Meta'],
+                    datasets: [{
+                        label: 'R$',
+                        data: [0, 2000],
+                        backgroundColor: ['rgba(56, 178, 172, 0.8)', 'rgba(203, 213, 224, 0.5)'],
+                        borderColor: ['rgb(56, 178, 172)', 'rgb(203, 213, 224)'],
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, grid: { color: '#f7fafc' } },
+                        x: { grid: { display: false } }
+                    }
+                }
+            });
+        }
+
+        function updateChart() {
+            const sales = parseFloat(document.getElementById('input-sales').value) || 0;
+            const goal = parseFloat(document.getElementById('input-goal').value) || 2000;
+
+            performanceChart.data.datasets[0].data = [sales, goal];
+            
+            if (sales >= goal) {
+                performanceChart.data.datasets[0].backgroundColor[0] = 'rgba(72, 187, 120, 0.9)'; // Green
+            } else {
+                performanceChart.data.datasets[0].backgroundColor[0] = 'rgba(56, 178, 172, 0.8)'; // Teal
+            }
+
+            performanceChart.update();
+        }
+
+    </script>
+</body>
+</html>
