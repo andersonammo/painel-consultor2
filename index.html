@@ -1,3 +1,15 @@
+<!-- 
+    PAINEL DE ALTA PERFORMANCE COM SISTEMA DE CADASTRO COMPLETO
+    
+    Novidades:
+    1. Cadastro Completo: Agora solicita Nome, Telefone, Loja e Senha.
+    2. Redirecionamento Inteligente: Alterna entre Login (simples) e Cadastro (completo) na mesma tela.
+    3. Banco de Dados: Salva as informações extras do perfil do consultor.
+
+    CONFIGURAÇÃO OBRIGATÓRIA:
+    Substitua o objeto "firebaseConfig" abaixo pelas suas chaves do Firebase.
+-->
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -5,75 +17,195 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Painel de Alta Performance: Consultor de Ótica</title>
     
+    <!-- Estilos e Gráficos -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     
+    <!-- Firebase SDKs -->
     <script type="module">
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
-        import { getFirestore, doc, setDoc, getDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore, doc, setDoc, getDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
-        // --- ÁREA DE CONFIGURAÇÃO DO FIREBASE ---
-        // Se você já tem suas chaves, cole aqui. Se não, o código tenta usar uma configuração padrão segura.
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'otica-app-v1';
+        // --- ÁREA DE CONFIGURAÇÃO ---
+        // COLE SUAS CHAVES AQUI
+        const firebaseConfig = {
+  apiKey: "AIzaSyA2w-s3ZGRlUW3KJ12Qy6fqdUJYL7TpwcE",
+  authDomain: "proximo-nivel-7bc9d.firebaseapp.com",
+  projectId: "proximo-nivel-7bc9d",
+  storageBucket: "proximo-nivel-7bc9d.firebasestorage.app",
+  messagingSenderId: "108222503240",
+  appId: "1:108222503240:web:31e62f4fafd58f8e7abb7d",
+  measurementId: "G-KSQEND9KWH"
+};
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'otica-app-v3';
 
         // Inicialização
-        let db, auth, currentUser;
+        let db, auth;
         
         try {
             const app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
             
-            // Login Anônimo automático para permitir salvar dados
-            signInAnonymously(auth).then(userCred => {
-                currentUser = userCred.user;
-                console.log("Conectado ao Banco de Dados.");
-            }).catch(e => console.error("Modo offline (sem banco de dados):", e));
+            // Autenticação anônima para permitir conexão ao DB
+            signInAnonymously(auth).then(() => console.log("Conectado ao Firebase."));
 
         } catch (e) {
-            console.log("Firebase não configurado ou erro de inicialização. O painel funcionará apenas localmente.");
+            console.error("Erro Firebase:", e);
         }
 
-        // --- LÓGICA DE LOGIN SIMPLIFICADO ---
-        // Recupera o último nome usado
-        let consultantName = localStorage.getItem('optical_consultant_name') || '';
+        // --- LÓGICA DE SEGURANÇA (HASH) ---
+        async function hashPassword(message) {
+            const msgBuffer = new TextEncoder().encode(message);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
 
-        // Expõe funções para o HTML
-        window.handleLoginSubmit = async function(e) {
-            e.preventDefault();
-            const nameInput = document.getElementById('login-name').value.trim();
-            const passInput = document.getElementById('login-pass').value.trim();
+        // --- CONTROLE DE INTERFACE (LOGIN vs CADASTRO) ---
+        window.isRegistering = false;
+        
+        window.toggleAuthMode = function() {
+            window.isRegistering = !window.isRegistering;
+            const title = document.getElementById('auth-title');
+            const btn = document.getElementById('auth-submit-btn');
+            const toggleText = document.getElementById('auth-toggle-text');
+            const extraFields = document.getElementById('register-extra-fields');
 
-            if (!nameInput) {
-                alert("Por favor, digite seu nome.");
-                return;
+            if (window.isRegistering) {
+                // MODO CADASTRO
+                title.innerText = "Novo Cadastro";
+                btn.innerText = "Criar Minha Conta";
+                toggleText.innerHTML = 'Já tem conta? <button type="button" onclick="toggleAuthMode()" class="text-teal-600 font-bold hover:underline">Fazer Login</button>';
+                document.getElementById('login-name').placeholder = "Crie um nome de usuário";
+                
+                // Mostrar campos extras
+                extraFields.classList.remove('hidden');
+            } else {
+                // MODO LOGIN
+                title.innerText = "Login do Consultor";
+                btn.innerText = "Entrar";
+                toggleText.innerHTML = 'Primeira vez aqui? <button type="button" onclick="toggleAuthMode()" class="text-teal-600 font-bold hover:underline">Cadastre-se</button>';
+                document.getElementById('login-name').placeholder = "Seu nome de usuário";
+                
+                // Esconder campos extras
+                extraFields.classList.add('hidden');
             }
-            
-            // Senha visual apenas (não valida no banco)
-            if (passInput.length < 3) {
-                alert("Digite uma senha simples (mínimo 3 caracteres) para entrar.");
-                return;
-            }
-
-            // Salva o nome e entra
-            consultantName = nameInput;
-            localStorage.setItem('optical_consultant_name', consultantName);
-            
-            // Troca de tela
-            document.getElementById('login-view').classList.add('hidden');
-            document.getElementById('dashboard-view').classList.remove('hidden');
-            document.getElementById('header-consultant-name').innerText = consultantName;
-            
-            // Carrega dados
-            window.loadDayData(window.currentDayIndex);
         };
 
-        // --- FUNÇÕES DE BANCO DE DADOS ---
-        
-        // Helper: Gera a chave de data (ex: nome_2023-10-27)
+        // --- FUNÇÃO PRINCIPAL DE AUTH ---
+        window.handleAuthSubmit = async function(e) {
+            e.preventDefault();
+            if (!db) { alert("Erro: Firebase não configurado. Verifique o código."); return; }
+
+            const nameInput = document.getElementById('login-name').value.trim();
+            const passInput = document.getElementById('login-pass').value.trim();
+            const btn = document.getElementById('auth-submit-btn');
+            const originalText = btn.innerText;
+
+            if (!nameInput || !passInput) {
+                alert("Preencha o Usuário e a Senha.");
+                return;
+            }
+            if (passInput.length < 4) {
+                alert("A senha precisa ter pelo menos 4 caracteres.");
+                return;
+            }
+
+            // Validação de campos extras no cadastro
+            let phoneInput = "";
+            let storeInput = "";
+            if (window.isRegistering) {
+                phoneInput = document.getElementById('register-phone').value.trim();
+                storeInput = document.getElementById('register-store').value.trim();
+
+                if (!phoneInput || !storeInput) {
+                    alert("Por favor, preencha o Telefone e o Nome da Loja.");
+                    return;
+                }
+            }
+
+            btn.innerText = "Processando...";
+            btn.disabled = true;
+
+            try {
+                // Cria ID seguro (ex: João Silva -> joao_silva)
+                const safeId = nameInput.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', safeId);
+                const passwordHash = await hashPassword(passInput);
+
+                if (window.isRegistering) {
+                    // --- MODO CADASTRO ---
+                    const docSnap = await getDoc(userDocRef);
+                    if (docSnap.exists()) {
+                        alert("Este nome de usuário já existe. Por favor, escolha outro.");
+                        btn.innerText = originalText;
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    // Cria o usuário com todos os dados
+                    await setDoc(userDocRef, {
+                        name: nameInput,
+                        phone: phoneInput,
+                        store: storeInput,
+                        passwordHash: passwordHash,
+                        createdAt: new Date().toISOString()
+                    });
+
+                    alert("Conta criada com sucesso!");
+                    loginSuccess(nameInput, storeInput);
+
+                } else {
+                    // --- MODO LOGIN ---
+                    const docSnap = await getDoc(userDocRef);
+                    
+                    if (!docSnap.exists()) {
+                        alert("Usuário não encontrado. Clique em 'Cadastre-se' para criar uma conta.");
+                        btn.innerText = originalText;
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    const userData = docSnap.data();
+                    if (userData.passwordHash !== passwordHash) {
+                        alert("Senha incorreta.");
+                        btn.innerText = originalText;
+                        btn.disabled = false;
+                        return;
+                    }
+
+                    loginSuccess(userData.name, userData.store || "Minha Loja");
+                }
+
+            } catch (err) {
+                console.error(err);
+                alert("Erro de conexão: " + err.message);
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        };
+
+        // Sucesso no Login
+        function loginSuccess(name, storeName) {
+            window.consultantName = name;
+            localStorage.setItem('optical_consultant_name', name);
+            
+            document.getElementById('login-view').classList.add('hidden');
+            document.getElementById('dashboard-view').classList.remove('hidden');
+            document.getElementById('header-consultant-name').innerText = name;
+            
+            // Opcional: Mostrar nome da loja em algum lugar se desejar
+            console.log("Logado na loja:", storeName);
+            
+            window.loadDayData(window.currentDayIndex);
+        }
+
+        // --- FUNÇÕES DE DADOS (DASHBOARD) ---
+        window.consultantName = localStorage.getItem('optical_consultant_name') || '';
+
         window.getDateKey = function(dayIndex) {
             const today = new Date();
             const dayDiff = dayIndex - (today.getDay() === 0 ? 6 : today.getDay() - 1);
@@ -83,14 +215,14 @@
         }
 
         window.saveToDb = async function(dataObj) {
-            if (!db || !consultantName) return; // Se não tiver DB configurado, ignora
+            if (!db || !window.consultantName) return;
 
             const dateKey = window.getDateKey(window.currentDayIndex);
-            // Cria um ID seguro removendo espaços e caracteres especiais
-            const safeName = consultantName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            const safeName = window.consultantName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
             const docId = `${safeName}_${dateKey}`;
             
-            const docRef = doc(db, 'daily_reports', docId);
+            // Salva na coleção 'daily_reports'
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'daily_reports', docId);
 
             try {
                 const statusEl = document.getElementById('save-status');
@@ -108,29 +240,26 @@
         };
 
         window.fetchFromDb = async function(dayIndex) {
-            if (!db || !consultantName) return null;
+            if (!db || !window.consultantName) return null;
 
             const dateKey = window.getDateKey(dayIndex);
-            const safeName = consultantName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+            const safeName = window.consultantName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
             const docId = `${safeName}_${dateKey}`;
-            const docRef = doc(db, 'daily_reports', docId);
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'daily_reports', docId);
 
             try {
                 const docSnap = await getDoc(docRef);
                 if (docSnap.exists()) {
                     return docSnap.data();
                 }
-            } catch (e) {
-                console.error("Erro ao carregar:", e);
-            }
+            } catch (e) { console.error(e); }
             return null;
         };
-
-        // Verifica se já estava logado ao abrir
+        
+        // Auto-preenchimento
         document.addEventListener("DOMContentLoaded", () => {
-            if(consultantName) {
-                document.getElementById('login-name').value = consultantName;
-            }
+             const storedName = localStorage.getItem('optical_consultant_name');
+             if(storedName) document.getElementById('login-name').value = storedName;
         });
 
     </script>
@@ -147,39 +276,57 @@
 </head>
 <body class="min-h-screen flex flex-col">
 
-    <div id="login-view" class="fixed inset-0 z-50 flex items-center justify-center login-bg px-4">
-        <div class="bg-white p-8 rounded-xl shadow-xl max-w-md w-full border border-gray-100 transition-all duration-300">
-            <div class="text-center mb-8">
+    <!-- TELA DE LOGIN / CADASTRO -->
+    <div id="login-view" class="fixed inset-0 z-50 flex items-center justify-center login-bg px-4 overflow-y-auto">
+        <div class="bg-white p-8 rounded-xl shadow-xl max-w-md w-full border border-gray-100 transition-all duration-300 my-8">
+            <div class="text-center mb-6">
                 <span class="text-4xl mb-2 block">👓</span>
-                <h1 class="text-2xl font-bold text-gray-800">Consultor Pro</h1>
+                <h1 id="auth-title" class="text-2xl font-bold text-gray-800">Login do Consultor</h1>
                 <p class="text-sm text-gray-500">Acesse seu painel de performance</p>
             </div>
             
-            <form onsubmit="handleLoginSubmit(event)" class="space-y-6">
+            <form onsubmit="handleAuthSubmit(event)" class="space-y-4">
+                <!-- Campos Padrão -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Seu Nome</label>
-                    <input type="text" id="login-name" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="Ex: João Silva" required>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Nome de Usuário</label>
+                    <input type="text" id="login-name" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="Seu nome de usuário" required>
                 </div>
                 
+                <!-- Campos Extras de Cadastro (Ocultos inicialmente) -->
+                <div id="register-extra-fields" class="hidden space-y-4 border-l-2 border-teal-100 pl-4 py-1">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Telefone / WhatsApp</label>
+                        <input type="tel" id="register-phone" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="(00) 00000-0000">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Nome da Loja</label>
+                        <input type="text" id="register-store" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="Ex: Ótica Visão Centro">
+                    </div>
+                </div>
+
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Senha de Acesso</label>
-                    <input type="password" id="login-pass" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="••••" required>
-                    <p class="text-xs text-gray-400 mt-1 text-right">Digite qualquer senha simples para entrar.</p>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Senha</label>
+                    <input type="password" id="login-pass" class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all" placeholder="••••••••" required>
                 </div>
 
                 <button type="submit" id="auth-submit-btn" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 px-4 rounded-lg shadow-md transition-colors duration-200">
-                    Entrar no Sistema
+                    Entrar
                 </button>
             </form>
             
-            <div class="mt-6 text-center text-xs text-gray-400">
-                <p>Sistema Simplificado • Dados em Nuvem</p>
+            <div class="mt-6 text-center text-sm text-gray-600">
+                <p id="auth-toggle-text">
+                    Primeira vez aqui? 
+                    <button type="button" onclick="toggleAuthMode()" class="text-teal-600 font-bold hover:underline">Cadastre-se</button>
+                </p>
             </div>
         </div>
     </div>
 
+    <!-- TELA DO PAINEL (Oculta inicialmente) -->
     <div id="dashboard-view" class="hidden flex flex-col min-h-screen w-full">
         
+        <!-- Cabeçalho -->
         <header class="bg-white border-b border-gray-200 sticky top-0 z-40 shadow-sm">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
                 <div class="flex flex-col md:flex-row justify-between items-center gap-4">
@@ -196,6 +343,7 @@
                         </div>
                     </div>
                     
+                    <!-- Seletor de Dia -->
                     <div class="flex bg-gray-100 p-1 rounded-lg overflow-x-auto w-full md:w-auto">
                         <button onclick="setDay(0)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="0">Seg</button>
                         <button onclick="setDay(1)" class="day-btn flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors focus:outline-none hover:bg-white hover:shadow-sm" data-day="1">Ter</button>
@@ -210,6 +358,7 @@
 
         <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full grid grid-cols-1 lg:grid-cols-12 gap-8">
             
+            <!-- Barra Lateral Esquerda: Linha do Tempo -->
             <div class="lg:col-span-7 flex flex-col gap-6">
                 <div class="flex justify-between items-end border-b pb-2 mb-2">
                     <h3 class="text-xl font-bold text-gray-800">Rotina Diária</h3>
@@ -217,11 +366,14 @@
                 </div>
 
                 <div class="relative pl-4" id="timeline-container">
-                    </div>
+                    <!-- Preenchido via JavaScript -->
+                </div>
             </div>
 
+            <!-- Coluna Direita: Ferramentas -->
             <div class="lg:col-span-5 flex flex-col gap-6">
                 
+                <!-- Card da Missão do Dia -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 transition-all duration-300 hover:shadow-md">
                     <div class="flex items-center gap-3 mb-4">
                         <span class="text-2xl">🎯</span>
@@ -242,6 +394,7 @@
                     </div>
                 </div>
 
+                <!-- Scripts Rápidos -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                     <h3 class="text-lg font-bold text-gray-800 mb-4 border-b pb-2">🗣️ Scripts Rápidos</h3>
                     <div class="space-y-2">
@@ -264,6 +417,7 @@
                     </div>
                 </div>
 
+                <!-- Gráfico e Inputs -->
                 <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                     <h3 class="text-lg font-bold text-gray-800 mb-2">📊 Relatório</h3>
                     <div class="grid grid-cols-2 gap-4 mb-4">
@@ -299,6 +453,7 @@
         </footer>
     </div>
 
+    <!-- LÓGICA DA INTERFACE -->
     <script>
         // --- DADOS DO CRONOGRAMA ---
         const scheduleData = [
